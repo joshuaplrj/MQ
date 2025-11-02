@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quantum Note Detector</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #121212;
+            color: #e0e0e0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .screen {
+            display: none; /* Hidden by default */
+            flex-direction: column;
+            align-items: center;
+            background-color: #1e1e1e;
+            border-radius: 12px;
+            padding: 2rem;
+            width: 90%;
+            max-width: 600px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            border: 1px solid #333;
+        }
+        .screen.active {
+            display: flex; /* Show active screen */
+        }
+        h2 {
+            color: #4CAF50; /* Green accent */
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 8px;
+            margin-top: 0;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            margin: 10px;
+            font-size: 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.3s, transform 0.1s;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:active {
+            transform: scale(0.98);
+        }
+        button:disabled {
+            background-color: #555;
+            cursor: not-allowed;
+        }
+        .chord-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            width: 100%;
+        }
+        .record-station {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #282828;
+            border-radius: 8px;
+        }
+        .record-station p {
+            margin: 5px 0;
+            font-style: italic;
+            color: #aaa;
+        }
+        .live-display {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #fff;
+            margin: 10px 0;
+            height: 40px;
+        }
+        #waveformCanvas {
+            width: 100%;
+            height: 100px;
+            background-color: #000;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+        #durationInput {
+            width: 80px;
+            font-size: 16px;
+            padding: 8px;
+            margin-left: 10px;
+            border-radius: 4px;
+            border: 1px solid #555;
+            background-color: #333;
+            color: #e0e0e0;
+            text-align: center;
+        }
+        #resultsContainer {
+            width: 100%;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        #resultsContainer pre {
+            background-color: #000;
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto;
+            border: 1px solid #333;
+            line-height: 1.6;
+            color: #00ff00; /* Terminal green */
+        }
+        .result-title {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #4CAF50;
+            margin-top: 15px;
+        }
+        .final-call {
+            font-size: 1.5rem;
+            font-weight: bold;
+            text-align: center;
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .final-call.constant {
+            background-color: #2a3d2a;
+            color: #8bc34a;
+        }
+        .final-call.balanced {
+            background-color: #3d2a2a;
+            color: #ff8a80;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="screen-chord-select" class="screen active">
+        <h2>Select Chord Type</h2>
+        <div class="chord-grid">
+            <button onclick="selectChordType(3)">3-Note Chord (Deutsch)</button>
+            <button onclick="selectChordType(5)">5-Note (Fifth)</button>
+            <button onclick="selectChordType(7)">7-Note (Seventh)</button>
+            <button onclick="selectChordType(9)">9-Note (Ninth)</button>
+            <button onclick="selectChordType(11)">11-Note (Eleventh)</button>
+            <button onclick="selectChordType(13)">13-Note (Thirteenth)</button>
+        </div>
+    </div>
+
+    <div id="screen-recording" class="screen">
+        <h2>Record Notes</h2>
+        <div>
+            <label for="durationInput">Recording Time (s):</label>
+            <input type="number" id="durationInput" value="2" min="1" max="10">
+        </div>
+        <div id="record-stations-container" style="width: 100%;">
+            </div>
+        <button id="run-algorithm-btn" style="display:none;" onclick="performDeutschAnalysis()">Run Deutsch's Algorithm</button>
+        <button onclick="showScreen('screen-chord-select')">Back to Menu</button>
+    </div>
+    
+    <div id="screen-results" class="screen">
+        <h2>Algorithm Results</h2>
+        <div id="resultsContainer">
+            </div>
+        <button onclick="showScreen('screen-recording')">Back to Recording</button>
+    </div>
+
+
+    <script>
+        // --- Global Variables ---
+        let audioContext;
+        let analyser;
+        let mediaStreamSource;
+        let waveformBuffer;
+        let fftBuffer;
+        let canvasCtx;
+        let waveformCanvas;
+        let animationFrameId;
+        let currentRecordingIndex = -1;
+        let recordedNotes = [];
+        let noteCount = 0;
+        let recordingTimeouts = [];
+
+        // Note detection
+        const noteStrings = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+        const A4 = 440;
+        const C0 = A4 * Math.pow(2, -4.75); // Frequency of C0
+
+        // --- UI Navigation ---
+        function showScreen(screenId) {
+            document.querySelectorAll('.screen').forEach(screen => {
+                screen.classList.remove('active');
+            });
+            document.getElementById(screenId).classList.add('active');
+        }
+
+        function selectChordType(numNotes) {
+            noteCount = numNotes;
+            recordedNotes = new Array(numNotes).fill(null);
+            setupRecordingScreen(numNotes);
+            showScreen('screen-recording');
+
+            // Only show algorithm button for the 3-note case
+            document.getElementById('run-algorithm-btn').style.display = (numNotes === 3) ? 'block' : 'none';
+        }
+
+        function setupRecordingScreen(numNotes) {
+            const container = document.getElementById('record-stations-container');
+            container.innerHTML = ''; // Clear previous stations
+
+            for (let i = 0; i < numNotes; i++) {
+                const station = document.createElement('div');
+                station.className = 'record-station';
+                station.id = `station-${i}`;
+                
+                let noteName = `Note ${i + 1}`;
+                if (numNotes === 3 && i === 0) noteName = "Note 1 (defines f(0))";
+                if (numNotes === 3 && i === 1) noteName = "Note 2 (defines f(1))";
+                if (numNotes === 3 && i === 2) noteName = "Note 3 (Spectator)";
+
+                station.innerHTML = `
+                    <h3>${noteName}</h3>
+                    <p>Click to record</p>
+                    <div class="live-display" id="live-note-${i}">--</div>
+                    <canvas id="canvas-${i}" class="waveformCanvas" width="500" height="100"></canvas>
+                    <button id="record-btn-${i}" onclick="startRecording(${i})">Record</button>
+                    <button id="retry-btn-${i}" onclick="retryRecording(${i})" style="display:none; background-color: #ff9800;">Retry</button>
+                    <div id="recorded-note-${i}" style="font-weight: bold; margin-top: 10px;"></div>
+                `;
+                container.appendChild(station);
+            }
+        }
+
+        // --- Audio Processing ---
+        async function startMicrophone() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioContext.state === 'suspended') {
+                await audioContext.resume();
+            }
+
+            if (!mediaStreamSource) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                    mediaStreamSource = audioContext.createMediaStreamSource(stream);
+                    
+                    analyser = audioContext.createAnalyser();
+                    analyser.fftSize = 2048; // Larger FFT for better frequency resolution
+                    waveformBuffer = new Uint8Array(analyser.fftSize);
+                    fftBuffer = new Float32Array(analyser.frequencyBinCount);
+                    
+                    mediaStreamSource.connect(analyser);
+                } catch (err) {
+                    console.error('Error accessing microphone:', err);
+                    alert('Could not access microphone. Please allow microphone permissions.');
+                }
+            }
+        }
+
+        function hzToNoteAndOctave(frequency) {
+            if (frequency === 0) return { note: '--', octave: '', detune: 0 };
+
+            const h = 12 * Math.log2(frequency / A4);
+            const n = Math.round(h);
+            const detune = (h - n) * 100;
+            
+            const noteIndex = (n + 57) % 12; // (n + 4*12 + 9) % 12, A4 is 9th semitone (A)
+            const octave = Math.floor((n + 57) / 12);
+
+            return {
+                note: noteStrings[noteIndex],
+                octave: octave,
+                detune: detune
+            };
+        }
+
+        function findFundamentalFreq() {
+            if (!analyser) return 0;
+            
+            analyser.getFloatFrequencyData(fftBuffer);
+
+            // Find the peak in the FFT
+            let maxVal = -Infinity;
+            let maxIndex = -1;
+
+            for (let i = 0; i < analyser.frequencyBinCount; i++) {
+                if (fftBuffer[i] > maxVal) {
+                    maxVal = fftBuffer[i];
+                    maxIndex = i;
+                }
+            }
+            
+            // Convert index to frequency
+            const freq = maxIndex * audioContext.sampleRate / analyser.fftSize;
+            return freq;
+        }
+
+        function drawWaveform() {
+            if (!analyser || !canvasCtx) return;
+            
+            analyser.getByteTimeDomainData(waveformBuffer);
+            
+            canvasCtx.fillStyle = 'rgb(0, 0, 0)';
+            canvasCtx.fillRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+            canvasCtx.lineWidth = 2;
+            canvasCtx.strokeStyle = 'rgb(0, 255, 0)';
+            canvasCtx.beginPath();
+            
+            const sliceWidth = waveformCanvas.width * 1.0 / analyser.fftSize;
+            let x = 0;
+            
+            for(let i = 0; i < analyser.fftSize; i++) {
+                const v = waveformBuffer[i] / 128.0; // value from 0 to 2
+                const y = v * waveformCanvas.height / 2;
+                
+                if(i === 0) {
+                    canvasCtx.moveTo(x, y);
+                } else {
+                    canvasCtx.lineTo(x, y);
+                }
+                
+                x += sliceWidth;
+            }
+            
+            canvasCtx.lineTo(waveformCanvas.width, waveformCanvas.height / 2);
+            canvasCtx.stroke();
+        }
+
+        function updateLiveDisplay() {
+            if (currentRecordingIndex === -1) return; // Not recording
+
+            const freq = findFundamentalFreq();
+            const { note, octave } = hzToNoteAndOctave(freq);
+            
+            const liveNoteDisplay = document.getElementById(`live-note-${currentRecordingIndex}`);
+            if (note !== '--') {
+                liveNoteDisplay.textContent = `${note}${octave}`;
+            } else {
+                liveNoteDisplay.textContent = '--';
+            }
+
+            drawWaveform();
+            
+            animationFrameId = requestAnimationFrame(updateLiveDisplay);
+        }
+
+        async function startRecording(index) {
+            currentRecordingIndex = index;
+            await startMicrophone(); // Ensure mic is started
+
+            // Disable all other record buttons
+            document.querySelectorAll('button[id^="record-btn-"]').forEach(btn => btn.disabled = true);
+            document.getElementById(`record-btn-${index}`).textContent = "Recording...";
+            document.getElementById(`retry-btn-${index}`).style.display = 'none';
+
+            // Setup canvas
+            waveformCanvas = document.getElementById(`canvas-${index}`);
+            canvasCtx = waveformCanvas.getContext('2d');
+            
+            // Start live update loop
+            updateLiveDisplay();
+
+            // Stop recording after t seconds
+            const durationT = parseFloat(document.getElementById('durationInput').value) * 1000;
+            
+            const timeoutId = setTimeout(() => {
+                stopRecording(index);
+            }, durationT);
+            recordingTimeouts[index] = timeoutId;
+        }
+
+        function stopRecording(index) {
+            if (currentRecordingIndex !== index) return; // Already stopped
+            
+            cancelAnimationFrame(animationFrameId);
+            animationFrameId = null;
+
+            // Clear any pending timeout
+            if (recordingTimeouts[index]) {
+                clearTimeout(recordingTimeouts[index]);
+                recordingTimeouts[index] = null;
+            }
+            
+            // Get final note
+            const freq = findFundamentalFreq();
+            const noteData = hzToNoteAndOctave(freq);
+            
+            if (noteData.note !== '--') {
+                recordedNotes[index] = noteData;
+                document.getElementById(`recorded-note-${index}`).textContent = 
+                    `Recorded: ${noteData.note}${noteData.octave} (${freq.toFixed(2)} Hz)`;
+            } else {
+                recordedNotes[index] = null;
+                document.getElementById(`recorded-note-${index}`).textContent = `Recording failed. Try again.`;
+            }
+
+            // Update UI
+            document.getElementById(`live-note-${index}`).textContent = '--';
+            document.getElementById(`record-btn-${index}`).textContent = "Record";
+            document.getElementById(`record-btn-${index}`).style.display = 'none'; // Hide record btn
+            document.getElementById(`retry-btn-${index}`).style.display = 'inline-block'; // Show retry
+            
+            // Re-enable other record buttons if they are not done
+            document.querySelectorAll('button[id^="record-btn-"]').forEach((btn, i) => {
+                if (!recordedNotes[i]) {
+                    btn.disabled = false;
+                }
+            });
+
+            currentRecordingIndex = -1;
+            
+            // Clean up canvas
+            canvasCtx.fillStyle = 'rgb(0, 0, 0)';
+            canvasCtx.fillRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+        }
+
+        function retryRecording(index) {
+            recordedNotes[index] = null;
+            document.getElementById(`recorded-note-${index}`).textContent = '';
+            document.getElementById(`record-btn-${index}`).style.display = 'inline-block';
+            document.getElementById(`record-btn-${index}`).disabled = false;
+            document.getElementById(`retry-btn-${index}`).style.display = 'none';
+        }
+
+        // --- Quantum Simulation ---
+
+        // 1. Complex Number Class
+        class Complex {
+            constructor(re = 0, im = 0) {
+                this.re = re;
+                this.im = im;
+            }
+            add(other) {
+                return new Complex(this.re + other.re, this.im + other.im);
+            }
+            multiply(other) {
+                const re = this.re * other.re - this.im * other.im;
+                const im = this.re * other.im + this.im * other.re;
+                return new Complex(re, im);
+            }
+            magnitudeSq() {
+                return this.re * this.re + this.im * this.im;
+            }
+            toString() {
+                if (this.im === 0) return `${this.re.toFixed(3)}`;
+                if (this.re === 0) return `${this.im.toFixed(3)}i`;
+                return `${this.re.toFixed(3)} ${this.im > 0 ? '+' : '-'} ${Math.abs(this.im).toFixed(3)}i`;
+            }
+        }
+
+        // 2. Quantum Gate & Math Definitions
+        const C = (re, im) => new Complex(re, im);
+        const C_ZERO = C(0, 0);
+        const C_ONE = C(1, 0);
+        const C_NEG_ONE = C(-1, 0);
+        const C_SQRT1_2 = C(1 / Math.sqrt(2), 0);
+
+        const GATES = {
+            H: [
+                [C_SQRT1_2, C_SQRT1_2],
+                [C_SQRT1_2, C_NEG_ONE.multiply(C_SQRT1_2)]
+            ],
+            I: [
+                [C_ONE, C_ZERO],
+                [C_ZERO, C_ONE]
+            ],
+            X: [
+                [C_ZERO, C_ONE],
+                [C_ONE, C_ZERO]
+            ]
+        };
+
+        function tensorProduct(A, B) {
+            const m = A.length;
+            const n = A[0].length;
+            const p = B.length;
+            const q = B[0].length;
+            
+            const result = Array(m * p).fill(0).map(() => Array(n * q).fill(C_ZERO));
+            
+            for (let i = 0; i < m; i++) {
+                for (let j = 0; j < n; j++) {
+                    for (let k = 0; k < p; k++) {
+                        for (let l = 0; l < q; l++) {
+                            result[i * p + k][j * q + l] = A[i][j].multiply(B[k][l]);
+                        }
+                    }
+                }
+            }
+            return result;
+        }
+
+        function matrixVectorMultiply(matrix, vector) {
+            const n = matrix.length;
+            const result = Array(n).fill(C_ZERO);
+            
+            for (let i = 0; i < n; i++) {
+                let sum = C_ZERO;
+                for (let j = 0; j < n; j++) {
+                    sum = sum.add(matrix[i][j].multiply(vector[j]));
+                }
+                result[i] = sum;
+            }
+            return result;
+        }
+
+        // Build the U_f matrix (4x4)
+        function buildUf(f0, f1) {
+            // U_f |xy> = |x, y XOR f(x)>
+            // |00> -> |0, 0 ^ f(0)> = |0, f(0)>
+            // |01> -> |0, 1 ^ f(0)>
+            // |10> -> |1, 0 ^ f(1)> = |1, f(1)>
+            // |11> -> |1, 1 ^ f(1)>
+            
+            const Uf = Array(4).fill(0).map(() => Array(4).fill(C_ZERO));
+            
+            // f(0) logic
+            if (f0 === 0) {
+                Uf[0][0] = C_ONE; // |00> -> |00>
+                Uf[1][1] = C_ONE; // |01> -> |01>
+            } else { // f0 === 1
+                Uf[1][0] = C_ONE; // |00> -> |01>
+                Uf[0][1] = C_ONE; // |01> -> |00>
+            }
+            
+            // f(1) logic
+            if (f1 === 0) {
+                Uf[2][2] = C_ONE; // |10> -> |10>
+                Uf[3][3] = C_ONE; // |11> -> |11>
+            } else { // f1 === 1
+                Uf[3][2] = C_ONE; // |10> -> |11>
+                Uf[2][3] = C_ONE; // |11> -> |10>
+            }
+            return Uf;
+        }
+
+        // 3. Main Algorithm Function
+        function runDeutschAlgorithm(f0, f1) {
+            let log = "### Quantum Simulation Log ###\n\n";
+
+            // Init: |ψ₀⟩ = |01⟩
+            // |00⟩=0, |01⟩=1, |10⟩=2, |11⟩=3
+            let psi_0 = [C_ZERO, C_ONE, C_ZERO, C_ZERO];
+            log += `|ψ₀⟩ = |01⟩\nVector: [${psi_0.map(c => c.toString()).join(', ')}]\n\n`;
+
+            // Step 1: Apply H ⊗ H
+            // |ψ₁⟩ = (H ⊗ H) |ψ₀⟩
+            const H2 = tensorProduct(GATES.H, GATES.H);
+            let psi_1 = matrixVectorMultiply(H2, psi_0);
+            // This should result in |+⟩|−⟩ = 0.5 * (|00⟩ - |01⟩ + |10⟩ - |11⟩)
+            log += `|ψ₁⟩ = (H ⊗ H)|ψ₀⟩ = |+⟩|−⟩\nVector: [${psi_1.map(c => c.toString()).join(', ')}]\n\n`;
+
+            // Step 2: Apply Oracle U_f
+            // |ψ₂⟩ = U_f |ψ₁⟩
+            const Uf = buildUf(f0, f1);
+            let psi_2 = matrixVectorMultiply(Uf, psi_1);
+            log += `U_f built for f(0)=${f0}, f(1)=${f1}\n`;
+            log += `|ψ₂⟩ = U_f|ψ₁⟩\nVector: [${psi_2.map(c => c.toString()).join(', ')}]\n\n`;
+
+            // Step 3: Apply H ⊗ I
+            // |ψ₃⟩ = (H ⊗ I) |ψ₂⟩
+            const H_I = tensorProduct(GATES.H, GATES.I);
+            let psi_3 = matrixVectorMultiply(H_I, psi_2);
+            log += `|ψ₃⟩ = (H ⊗ I)|ψ₂⟩\nVector: [${psi_3.map(c => c.toString()).join(', ')}]\n\n`;
+
+            // Step 4: Measure Qubit 0
+            // Prob(0) = |⟨00|ψ₃⟩|² + |⟨01|ψ₃⟩|²
+            // Prob(1) = |⟨10|ψ₃⟩|² + |⟨11|ψ₃⟩|²
+            const prob0 = psi_3[0].magnitudeSq() + psi_3[1].magnitudeSq();
+            const prob1 = psi_3[2].magnitudeSq() + psi_3[3].magnitudeSq();
+            
+            log += `--- Measurement ---\n`;
+            log += `P(q₀ = 0) = |ψ₃[0]⟩|² + |ψ₃[1]⟩|² = ${prob0.toFixed(4)}\n`;
+            log += `P(q₀ = 1) = |ψ₃[2]⟩|² + |ψ₃[3]⟩|² = ${prob1.toFixed(4)}\n\n`;
+            
+            let result = (prob1 > prob0) ? 1 : 0;
+            log += `Simulation Output (q₀): ${result}`;
+            
+            return { log, result, prob0, prob1 };
+        }
+
+        // --- Main Execution ---
+        function performDeutschAnalysis() {
+            if (recordedNotes.includes(null)) {
+                alert("Please record all 3 notes before running the algorithm.");
+                return;
+            }
+
+            // 1. Define f(x) from notes
+            const f0_note = recordedNotes[0];
+            const f1_note = recordedNotes[1];
+            const spectator_note = recordedNotes[2];
+            
+            const f0 = f0_note.octave % 2;
+            const f1 = f1_note.octave % 2;
+            
+            const isConstant = (f0 === f1);
+
+            // 2. Run simulation
+            const { log, result, prob0, prob1 } = runDeutschAlgorithm(f0, f1);
+
+            // 3. Display results
+            const resultsContainer = document.getElementById('resultsContainer');
+            resultsContainer.innerHTML = ''; // Clear previous
+
+            // Classical Analysis
+            let classicalHtml =
+<div class="result-title">Classical Analysis</div>
+                <pre>Note 1 (${f0_note.note}${f0_note.octave}) -> Octave ${f0_note.octave} -> f(0) = ${f0}
+Note 2 (${f1_note.note}${f1_note.octave}) -> Octave ${f1_note.octave} -> f(1) = ${f1}
+Note 3 (${spectator_note.note}${spectator_note.octave}) -> Spectator
+<hr>
+f(0) == f(1) ?  (${f0} == ${f1})  ->  ${isConstant}
+Function is: **${isConstant ? 'CONSTANT' : 'BALANCED'}**</pre>
+            `;
+            
+            // Quantum Simulation
+            let quantumHtml = `
+                <div class="result-title">Quantum Simulation (Live Calculation)</div>
+                <pre>${log}</pre>
+            `;
+            
+            // Final Verdict
+            let verdictClass = isConstant ? 'constant' : 'balanced';
+            let verdictText = `
+                Classical: **${isConstant ? 'CONSTANT' : 'BALANCED'}**
+                <br>
+                Quantum: **${result === 0 ? 'CONSTANT' : 'BALANCED'}** (Predicted ${result})
+            `;
+            
+            resultsContainer.innerHTML = classicalHtml + quantumHtml;
+            resultsContainer.innerHTML += `
+                <div class="final-call ${verdictClass}">${verdictText}</div>
+            `;
+            
+            showScreen('screen-results');
+        }
+
+    </script>
+</body>
+</html>
